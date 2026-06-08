@@ -1,0 +1,6 @@
+ModPackExport
+
+The per-version item-icon rendering technique is adapted from IconExporter
+by CyclopsMC (https://github.com/CyclopsMC/IconExporter), licensed MIT.
+The Cyclops Core dependency is not used; the rendering code is reimplemented
+against this mod's own scaffold. Original MIT license terms are honored.
