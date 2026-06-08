@@ -28,6 +28,7 @@ public class ModPackExportMod {
     private boolean itemsFired = false;
     private boolean mobsFired = false;
     private boolean fcFired = false;
+    private boolean recipesFired = false;
     private int autoTicks = 0;
 
     public ModPackExportMod() {
@@ -88,6 +89,17 @@ public class ModPackExportMod {
                 LOGGER.info("[fcdump] auto-trigger queued {} ingredients", n);
             }
         }
+
+        if (!recipesFired) {
+            boolean enabled = "true".equalsIgnoreCase(System.getProperty("modpackexport.recipes"))
+                || Files.exists(FMLPaths.GAMEDIR.get().resolve("recipes.trigger"));
+            if (enabled) {
+                recipesFired = true;
+                LOGGER.info("[recipedump] auto-trigger firing");
+                int n = RecipeDumper.dumpAll(LOGGER::info);
+                LOGGER.info("[recipedump] auto-trigger wrote {} recipes", n);
+            }
+        }
     }
 
     private void onRegisterClientCommands(RegisterClientCommandsEvent event) {
@@ -131,6 +143,16 @@ public class ModPackExportMod {
             });
         event.getDispatcher().register(fcdump);
 
-        LOGGER.info("[jeidump] /jeidump + /itemdump + /mobdump + /fcdump client commands registered");
+        LiteralArgumentBuilder<CommandSourceStack> recipedump = Commands.literal("recipedump")
+            .executes(ctx -> {
+                CommandSourceStack src = ctx.getSource();
+                src.sendSuccess(() -> Component.literal("[recipedump] dumping recipes..."), false);
+                int n = RecipeDumper.dumpAll(msg -> src.sendSuccess(() -> Component.literal(msg), false));
+                src.sendSuccess(() -> Component.literal("[recipedump] wrote " + n + " recipes to recipes.json"), false);
+                return Command.SINGLE_SUCCESS;
+            });
+        event.getDispatcher().register(recipedump);
+
+        LOGGER.info("[jeidump] /jeidump + /itemdump + /mobdump + /fcdump + /recipedump client commands registered");
     }
 }
