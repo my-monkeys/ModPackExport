@@ -3,7 +3,6 @@ package com.mymonkey.modpackexport;
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.TextComponent;
@@ -30,6 +29,7 @@ public class ModPackExportMod {
     private boolean recipesFired = false;
     private boolean loadStarted = false;
     private int ticks = 0;
+    private int menuTicks = 0;
 
     public ModPackExportMod() {
         MinecraftForge.EVENT_BUS.addListener(this::onClientTick);
@@ -40,13 +40,17 @@ public class ModPackExportMod {
         if (event.phase != TickEvent.Phase.END) return;
         Minecraft mc = Minecraft.getInstance();
 
-        // MC < 1.20 has no --quickPlaySingleplayer, so a headless launch sits at the title
-        // screen. When a trigger is armed, auto-load the first single-player world so the
-        // dump can run. (Reusable for every pre-1.20 branch.)
+        // MC < 1.20 has no --quickPlaySingleplayer, so a headless launch sits at a menu.
+        // FTB/FancyMenu packs replace the vanilla TitleScreen, so don't match a specific
+        // class — once we've sat on ANY non-null menu screen for a few seconds (stable),
+        // auto-load the first world so the dump can run. (Reusable for every pre-1.20 branch.)
         if (mc.level == null) {
-            if (!loadStarted && mc.screen instanceof TitleScreen && anyTriggerArmed()) {
-                loadStarted = true;
-                autoLoadWorld(mc);
+            if (!loadStarted && mc.screen != null && anyTriggerArmed()) {
+                menuTicks++;
+                if (menuTicks > 120) { // ~6s settled on a menu
+                    loadStarted = true;
+                    autoLoadWorld(mc);
+                }
             }
             return;
         }
