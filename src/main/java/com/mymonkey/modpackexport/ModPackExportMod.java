@@ -27,6 +27,7 @@ public class ModPackExportMod {
     public static final Logger LOGGER = LoggerFactory.getLogger("modpackexport");
 
     private boolean recipesFired = false;
+    private boolean itemsFired = false;
     private boolean loadStarted = false;
     private int ticks = 0;
     private int menuTicks = 0;
@@ -59,20 +60,31 @@ public class ModPackExportMod {
         if (ticks < 100) return; // ~5s in-world settle
 
         if (!recipesFired) {
-            boolean enabled = "true".equalsIgnoreCase(System.getProperty("modpackexport.recipes"))
-                || Files.exists(FMLPaths.GAMEDIR.get().resolve("recipes.trigger"));
-            if (enabled) {
-                recipesFired = true;
+            recipesFired = true;
+            if (triggered("recipes")) {
                 LOGGER.info("[recipedump] auto-trigger firing");
                 int n = RecipeDumper.dumpAll(LOGGER::info);
                 LOGGER.info("[recipedump] auto-trigger wrote {} recipes", n);
             }
         }
+
+        // Item icons render over many ticks via a temporary screen → fire after recipes.
+        if (!itemsFired && mc.screen == null) {
+            itemsFired = true;
+            if (triggered("items")) {
+                LOGGER.info("[itemdump] opening item-icon screen");
+                mc.setScreen(new ItemIconScreen(128, mc.getWindow().getGuiScale(), LOGGER::info));
+            }
+        }
+    }
+
+    private static boolean triggered(String family) {
+        return "true".equalsIgnoreCase(System.getProperty("modpackexport." + family))
+            || Files.exists(FMLPaths.GAMEDIR.get().resolve(family + ".trigger"));
     }
 
     private boolean anyTriggerArmed() {
-        return "true".equalsIgnoreCase(System.getProperty("modpackexport.recipes"))
-            || Files.exists(FMLPaths.GAMEDIR.get().resolve("recipes.trigger"));
+        return triggered("recipes") || triggered("items");
     }
 
     /** Open the first single-player world from the title screen. 1.18.2 has the direct
@@ -115,6 +127,18 @@ public class ModPackExportMod {
                 return Command.SINGLE_SUCCESS;
             });
         event.getDispatcher().register(recipedump);
-        LOGGER.info("[modpackexport] /recipedump registered");
+
+        LiteralArgumentBuilder<CommandSourceStack> itemdump = Commands.literal("itemdump")
+            .executes(ctx -> {
+                CommandSourceStack src = ctx.getSource();
+                Minecraft mc = Minecraft.getInstance();
+                src.sendSuccess(new TextComponent("[itemdump] rendering item icons..."), false);
+                mc.setScreen(new ItemIconScreen(128, mc.getWindow().getGuiScale(),
+                    msg -> src.sendSuccess(new TextComponent(msg), false)));
+                return Command.SINGLE_SUCCESS;
+            });
+        event.getDispatcher().register(itemdump);
+
+        LOGGER.info("[modpackexport] /recipedump + /itemdump registered");
     }
 }
