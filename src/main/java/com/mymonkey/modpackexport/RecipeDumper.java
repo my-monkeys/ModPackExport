@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.mojang.serialization.JsonOps;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.RegistryOps;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -21,11 +22,18 @@ import java.nio.file.Files;
 import java.util.function.Consumer;
 
 /**
- * Dumps every recipe (raw JSON via codec), every item's display name, and every item
- * tag to {@code <gameDir>/recipes.json} — the shape build_crafts.py consumes. Replaces
- * the KubeJS recipe_dump.js: a real mod has no class-filter, so we write the file
- * directly (no log-chunk-and-reassemble). Reached via the integrated server, so it
- * must run in a loaded single-player world (the headless client launches one).
+ * Dumps every recipe (raw JSON), every item's display name, and every item tag to
+ * {@code <gameDir>/recipes.json} — the shape build_crafts.py consumes. Replaces the
+ * KubeJS recipe_dump.js: a real mod has no class-filter, so we write the file directly
+ * (no log-chunk-and-reassemble). Reached via the integrated server, so it must run in a
+ * loaded single-player world (the headless client launches one).
+ *
+ * Recipe JSON is the serializer-codec re-encode under a registry-aware ops. This matches
+ * the post-load shape KubeJS' r.json exposed (closer to the host normalizer's expectations
+ * than the pre-load datapack file — measured against the SB4 baseline), and the registry
+ * ops lets enchantment-bearing recipes encode (plain JsonOps throws "Can't access registry
+ * minecraft:enchantment"). Residual unresolved types (JEI-virtual shop recipes, a few custom
+ * machines) are tracked in modpacks-wiki FOLLOWUPS.md — they need JEI-runtime extraction.
  */
 public final class RecipeDumper {
     private RecipeDumper() {}
@@ -38,22 +46,26 @@ public final class RecipeDumper {
         }
         RecipeManager rm = server.getRecipeManager();
 
+        // Registry-aware ops: the serializer codec re-encodes each recipe to the same
+        // post-load JSON shape KubeJS' r.json exposed (closer to the host normalizer's
+        // expectations than the pre-load datapack file), and registry-referencing recipes
+        // (enchantment-bearing) encode without "Can't access registry" errors.
+        RegistryOps<JsonElement> ops = server.registryAccess().createSerializationContext(JsonOps.INSTANCE);
+
         JsonArray recipes = new JsonArray();
         int ok = 0, errored = 0;
         for (RecipeHolder<?> holder : rm.getRecipes()) {
+            String id = holder.id().toString();
             try {
                 JsonObject entry = new JsonObject();
-                entry.addProperty("id", holder.id().toString());
-                Recipe<?> recipe = holder.value();
-                entry.addProperty("type",
-                    BuiltInRegistries.RECIPE_SERIALIZER.getKey(recipe.getSerializer()).toString());
-                entry.add("json", encode(recipe));
+                entry.addProperty("id", id);
+                entry.addProperty("type", serializerId(holder.value()));
+                entry.add("json", encode(holder.value(), ops));
                 recipes.add(entry);
                 ok++;
             } catch (Throwable t) {
                 errored++;
-                ModPackExportMod.LOGGER.warn("[recipedump] recipe {} failed: {}",
-                    holder.id(), t.toString());
+                ModPackExportMod.LOGGER.warn("[recipedump] recipe {} failed: {}", id, t.toString());
             }
         }
 
@@ -95,11 +107,14 @@ public final class RecipeDumper {
         return ok;
     }
 
-    /** Re-encode a recipe to its raw JSON via the serializer codec. Raw types capture
-     *  the wildcard so the codec accepts the recipe instance. */
+    private static String serializerId(Recipe<?> recipe) {
+        return BuiltInRegistries.RECIPE_SERIALIZER.getKey(recipe.getSerializer()).toString();
+    }
+
+    /** Registry-aware serializer-codec re-encode (fallback for recipes with no datapack file). */
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static JsonElement encode(Recipe<?> recipe) {
+    private static JsonElement encode(Recipe<?> recipe, RegistryOps<JsonElement> ops) {
         RecipeSerializer ser = recipe.getSerializer();
-        return (JsonElement) ser.codec().codec().encodeStart(JsonOps.INSTANCE, recipe).getOrThrow();
+        return (JsonElement) ser.codec().codec().encodeStart(ops, recipe).getOrThrow();
     }
 }
