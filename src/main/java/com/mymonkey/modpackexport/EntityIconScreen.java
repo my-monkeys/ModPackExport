@@ -48,7 +48,7 @@ public class EntityIconScreen extends Screen {
     // at RENDER_FILL → renderSheet shrinks the fill and re-renders until nothing touches an edge.
     private static final float RENDER_FILL = 0.42f;
     private static final float SHRINK = 0.6f;        // fill multiplier per clip retry
-    private static final int MAX_FIT_ATTEMPTS = 4;   // 0.42 → 0.25 → 0.15 → 0.09 (covers ~11x overhang)
+    private static final int MAX_FIT_ATTEMPTS = 6;   // 0.42→0.25→0.15→0.09→0.054→0.033 (covers ~26x overhang)
     private static final float FIT_FILL = 0.86f;
     private static final boolean DEBUG = "true".equalsIgnoreCase(System.getProperty("modpackexport.mobs.debug"));
     private int dbgEntities = 0;
