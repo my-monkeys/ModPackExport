@@ -29,6 +29,7 @@ public class ModPackExportMod {
     private boolean mobsFired = false;
     private boolean fcFired = false;
     private boolean recipesFired = false;
+    private boolean jeiRecipesFired = false;
     private int autoTicks = 0;
 
     public ModPackExportMod() {
@@ -100,6 +101,19 @@ public class ModPackExportMod {
                 LOGGER.info("[recipedump] auto-trigger wrote {} recipes", n);
             }
         }
+
+        // JEI viewer-driven recipe graph (concrete items + machine categories + virtual recipes) →
+        // needs the JEI runtime, so fire only once it's ready.
+        if (!jeiRecipesFired) {
+            boolean enabled = "true".equalsIgnoreCase(System.getProperty("modpackexport.jeirecipes"))
+                || Files.exists(FMLPaths.GAMEDIR.get().resolve("jeirecipes.trigger"));
+            if (enabled && JeiDumperPlugin.getRuntime() != null) {
+                jeiRecipesFired = true;
+                LOGGER.info("[jeirecipedump] auto-trigger firing");
+                int n = JeiRecipeDumper.dumpAll(LOGGER::info);
+                LOGGER.info("[jeirecipedump] auto-trigger wrote {} recipes", n);
+            }
+        }
     }
 
     private void onRegisterClientCommands(RegisterClientCommandsEvent event) {
@@ -152,6 +166,16 @@ public class ModPackExportMod {
                 return Command.SINGLE_SUCCESS;
             });
         event.getDispatcher().register(recipedump);
+
+        LiteralArgumentBuilder<CommandSourceStack> jeirecipedump = Commands.literal("jeirecipedump")
+            .executes(ctx -> {
+                CommandSourceStack src = ctx.getSource();
+                src.sendSuccess(() -> Component.literal("[jeirecipedump] dumping JEI recipe graph..."), false);
+                int n = JeiRecipeDumper.dumpAll(msg -> src.sendSuccess(() -> Component.literal(msg), false));
+                src.sendSuccess(() -> Component.literal("[jeirecipedump] wrote " + n + " recipes to jei_recipes.json"), false);
+                return Command.SINGLE_SUCCESS;
+            });
+        event.getDispatcher().register(jeirecipedump);
 
         LOGGER.info("[jeidump] /jeidump + /itemdump + /mobdump + /fcdump + /recipedump client commands registered");
     }
