@@ -41,8 +41,17 @@ public class EntityIconScreen extends Screen {
     private static final int FRAMES = 12;     // turntable steps (30° each)
     private static final int PER_FRAME = 2;   // entities rendered per render() call (heavier than items)
     private static final float TILT = 0.32f;  // downward camera tilt for a 3/4 look
-    private static final float FILL = 0.60f;  // fraction of the frame the hitbox fills — leaves
-                                              // margin for models that overhang their hitbox (no clipping)
+    // Two-pass auto-fit (ported from forge-1.18). Pass 1 renders each frame small (RENDER_FILL of the
+    // frame, by hitbox) so most overhanging models don't clip; pass 2 measures the mob's REAL extent
+    // across all 12 frames and crops+scales it to FIT_FILL, so every mob ends fully visible + evenly
+    // sized. A few models overhang >2x their hitbox (guardian spikes, ghast tentacles) and still clip
+    // at RENDER_FILL → renderSheet shrinks the fill and re-renders until nothing touches an edge.
+    private static final float RENDER_FILL = 0.42f;
+    private static final float SHRINK = 0.6f;        // fill multiplier per clip retry
+    private static final int MAX_FIT_ATTEMPTS = 4;   // 0.42 → 0.25 → 0.15 → 0.09 (covers ~11x overhang)
+    private static final float FIT_FILL = 0.86f;
+    private static final boolean DEBUG = "true".equalsIgnoreCase(System.getProperty("modpackexport.mobs.debug"));
+    private int dbgEntities = 0;
 
     private final List<LivingEntity> entities = new ArrayList<>();
     private final List<String> names = new ArrayList<>();
@@ -62,9 +71,15 @@ public class EntityIconScreen extends Screen {
         this.feedback = feedback;
         this.onDone = onDone;
         Minecraft mc = Minecraft.getInstance();
+        // Optional subset for fast iteration: -Dmodpackexport.mobs.only=minecraft:horse,minecraft:panda
+        java.util.Set<String> only = new java.util.HashSet<>();
+        for (String s : System.getProperty("modpackexport.mobs.only", "").split(",")) {
+            s = s.trim(); if (!s.isEmpty()) only.add(s);
+        }
         for (EntityType<?> type : BuiltInRegistries.ENTITY_TYPE) {
             ResourceLocation id = BuiltInRegistries.ENTITY_TYPE.getKey(type);
             if (id == null) continue;
+            if (!only.isEmpty() && !only.contains(id.toString())) continue;
             try {
                 Entity e = type.create(mc.level);
                 if (e instanceof LivingEntity le) {
@@ -128,29 +143,65 @@ public class EntityIconScreen extends Screen {
         }
     }
 
-    /** Render all FRAMES turntable angles of one entity and compose them into a sprite sheet. */
+    /** Render all FRAMES turntable angles of one entity and compose them into a sprite sheet, using
+     *  the two-pass auto-fit: render conservative, measure the union opaque bbox, retry at a smaller
+     *  fill while it touches a frame edge, then crop+scale the real extent to FIT_FILL. */
     private void renderSheet(LivingEntity entity, String name) throws Exception {
-        NativeImage sheet = new NativeImage(NativeImage.Format.RGBA, F * FRAMES, F, false);
-        boolean any = false;
-        for (int frame = 0; frame < FRAMES; frame++) {
-            float angle = (float) (frame * 2.0 * Math.PI / FRAMES);
-            try (NativeImage one = renderFrame(entity, angle)) {
-                for (int y = 0; y < F; y++) {
-                    for (int x = 0; x < F; x++) {
-                        sheet.setPixelRGBA(frame * F + x, y, one.getPixelRGBA(x, y));
-                    }
-                }
-                if (!any && hasContent(one)) any = true;
+        boolean dbgThis = DEBUG && dbgEntities < 8;
+        NativeImage[] frames = null;
+        int minX = 0, minY = 0, maxX = -1, maxY = -1;
+        float fill = RENDER_FILL;
+        int attempt = 0;
+        for (; attempt < MAX_FIT_ATTEMPTS; attempt++) {
+            if (frames != null) for (NativeImage im : frames) if (im != null) im.close();
+            frames = new NativeImage[FRAMES];
+            minX = F; minY = F; maxX = -1; maxY = -1;
+            for (int f = 0; f < FRAMES; f++) {
+                NativeImage one = renderFrame(entity, (float) (f * 2.0 * Math.PI / FRAMES), fill);
+                frames[f] = one;
+                for (int y = 0; y < F; y++)
+                    for (int x = 0; x < F; x++)
+                        if (((one.getPixelRGBA(x, y) >> 24) & 0xFF) > 10) {
+                            if (x < minX) minX = x; if (x > maxX) maxX = x;
+                            if (y < minY) minY = y; if (y > maxY) maxY = y;
+                        }
             }
+            boolean clipped = maxX >= 0 && (minX == 0 || maxX == F - 1 || minY == 0 || maxY == F - 1);
+            if (!clipped) break;
+            fill *= SHRINK;
         }
-        if (any) {
-            sheet.writeToFile(outDir.resolve(name + ".png"));
-            written++;
+        if (maxX < 0) {                                  // nothing rendered → skip
+            for (NativeImage im : frames) if (im != null) im.close();
+            if (dbgThis) { ModPackExportMod.LOGGER.info("[mobdbg] {} EMPTY", name); dbgEntities++; }
+            return;
         }
+        int bw = maxX - minX + 1, bh = maxY - minY + 1;
+        int side = (int) Math.ceil(Math.max(bw, bh) / FIT_FILL);
+        int sx0 = (minX + maxX + 1) / 2 - side / 2;
+        int sy0 = (minY + maxY + 1) / 2 - side / 2;
+        if (dbgThis) {
+            ModPackExportMod.LOGGER.info("[mobdbg] {} union x[{}..{}] y[{}..{}] -> side={} attempts={} fill={} clipped={}",
+                name, minX, maxX, minY, maxY, side, attempt + 1, String.format("%.3f", fill),
+                (minX == 0 || maxX == F - 1 || minY == 0 || maxY == F - 1));
+            dbgEntities++;
+        }
+        NativeImage sheet = new NativeImage(NativeImage.Format.RGBA, F * FRAMES, F, false);
+        for (int f = 0; f < FRAMES; f++) {
+            for (int oy = 0; oy < F; oy++)
+                for (int ox = 0; ox < F; ox++) {
+                    int sX = sx0 + (int) ((ox + 0.5f) * side / F);
+                    int sY = sy0 + (int) ((oy + 0.5f) * side / F);
+                    int px = (sX >= 0 && sX < F && sY >= 0 && sY < F) ? frames[f].getPixelRGBA(sX, sY) : 0;
+                    sheet.setPixelRGBA(f * F + ox, oy, px);
+                }
+            frames[f].close();
+        }
+        sheet.writeToFile(outDir.resolve(name + ".png"));
+        written++;
         sheet.close();
     }
 
-    private NativeImage renderFrame(LivingEntity entity, float angle) throws Exception {
+    private NativeImage renderFrame(LivingEntity entity, float angle, float fill) throws Exception {
         Minecraft mc = Minecraft.getInstance();
         RenderTarget mainTarget = mc.getMainRenderTarget();
         try {
@@ -173,7 +224,7 @@ public class EntityIconScreen extends Screen {
             // Scale so the WHOLE hitbox (height AND width) fits FILL of the frame — true max,
             // no weighting, so wide mobs don't overscale and clip.
             float bb = Math.max(entity.getBbHeight(), entity.getBbWidth());
-            float scale = (F * FILL) / Math.max(bb, 0.5f);
+            float scale = (F * fill) / Math.max(bb, 0.5f);
             // Centre the mob vertically: feet sit below centre by half the rendered height, so
             // the body straddles the frame centre (no headroom, no bottom clip).
             float feetY = F / 2.0f + (entity.getBbHeight() * scale) / 2.0f;
@@ -204,18 +255,6 @@ public class EntityIconScreen extends Screen {
                 RenderSystem.viewport(0, 0, mainTarget.width, mainTarget.height);
             }
         }
-    }
-
-    private static boolean hasContent(NativeImage img) {
-        int opaque = 0;
-        for (int y = 0; y < F; y++) {
-            for (int x = 0; x < F; x++) {
-                if (((img.getPixelRGBA(x, y) >> 24) & 0xFF) > 10 && ++opaque >= 8) {
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     private void finish() {
